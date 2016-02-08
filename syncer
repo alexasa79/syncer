@@ -1,0 +1,87 @@
+#!/usr/local/bin/bash
+
+if [ "$#" = "0" ]; then
+	echo "Usage: syncer <project name>"
+	echo "    project name is a directory on a remote machine. Address of the remote"
+	echo "    machine specified using $SYNCER_HOST environment variable. Directory"
+	echo "    on remote machine specified using $SYNCER_REMOTE_DIR environment variable."
+	echo "    Local work directory specified usign $SYNCER_LOCAL_DIR variable."
+	exit 0 
+fi
+
+if [ "$SYNCER_HOST" = "" ]; then
+	echo "Set SYNCER_HOST environment variable to remote host"
+	exit 0
+fi
+
+if [ "$SYNCER_REMOTE_DIR" = "" ]; then
+	echo "Set SYNCER_HOST environment variable to remote host"
+	exit 0
+fi
+
+if [ "$SYNCER_LOCAL_DIR" = "" ]; then
+	echo "Set SYNCER_HOST environment variable to remote host"
+	exit 0
+fi
+
+host=$SYNCER_HOST
+rdir=$SYNCER_REMOTE_DIR/$1
+ldir=$SYNCER_LOCAL_DIR/$1
+
+echo "Enumerating remote files"
+rfiles=$(ssh $host "find $rdir \( -name '*.cpp' -o -name '*.h' -o -name '*.c' -o -name 'Makefile' -o -name '*.make' \) -exec md5sum {} \;")
+
+echo "Indexing remote files"
+declare -A remote_md5s
+md5=""
+for word in $rfiles; do
+	if [ "$md5" = "" ]; then
+		md5=$word
+	else
+		remote_md5s["${word#$rdir/}"]=$md5
+		md5=""
+	fi
+done
+
+mkdir -p $ldir
+cd $ldir
+
+echo "Enumerating local files"
+lfiles=$(find . \( -name '*.cpp' -o -name '*.h' -o -name '*.c' -o -name 'Makefile' -o -name '*.make' \) -exec md5 -r {} \;)
+
+echo "Indexing local files"
+declare -A local_md5s
+md5=""
+for word in $lfiles; do
+	if [ "$md5" = "" ]; then
+		md5=$word
+	else
+		local_md5s["${word#./}"]=$md5
+		md5=""
+	fi
+done
+
+rm -f files
+touch files
+for file in ${!remote_md5s[@]}; do
+	if [ ! "${local_md5s[$file]}" = "${remote_md5s[$file]}" ]; then
+		echo "$file" >> files
+	fi
+done
+
+num_files=$(wc -l files | awk '{ print $1 }')
+echo "Downloading $num_files files"
+
+if [ ! "$num_files" = "0" ]; then
+	rsync -az --info=progress2 --files-from=files $host:$rdir .
+fi
+
+echo "Waiting for changes"
+fswatch -l .5 -r . | while read file; do
+	f=${file#$ldir/}
+	if [ ! "${remote_md5s[$f]}" = "" ]; then
+		echo -e "\tUploading $f" 
+		rsync -a --info=progress2 $file $host:$rdir/$f
+	fi
+done
+
